@@ -1,30 +1,48 @@
-# ====== etap build ======
-FROM node:20-alpine AS build
+# ====== build stage (Debian, stabilniej niż Alpine) ======
+FROM node:20-bookworm-slim AS build
 WORKDIR /app
 
-# kopiowanie zależności
-COPY package*.json ./
-RUN npm install
+# Kopiuj manifesty zależności
+COPY package.json ./
+# jeśli kiedyś dodasz lockfile, też zostanie użyty
+COPY package-lock.json* ./
 
-# kopiowanie kodu
+# Ustawienia npm: mniej "hałasu" i więcej retry przy problemach z siecią
+RUN npm config set fund false \
+ && npm config set audit false \
+ && npm config set fetch-retries 5 \
+ && npm config set fetch-retry-mintimeout 20000 \
+ && npm config set fetch-retry-maxtimeout 120000
+
+# Instalacja zależności
+RUN npm install --no-audit --no-fund
+
+# Kod aplikacji + build
 COPY . .
-
-# build aplikacji
 RUN npm run build
 
-# ====== etap runtime ======
+
+# ====== runtime stage ======
 FROM nginx:alpine
 
-# usuń domyślną konfigurację nginx
-RUN rm -f /etc/nginx/conf.d/default.conf
+# Konfiguracja nginx dla SPA (React): gdy nie ma pliku, zwróć index.html
+RUN rm -f /etc/nginx/conf.d/default.conf && \
+    printf '%s\n' \
+'server {' \
+'  listen 80;' \
+'  server_name _;' \
+'' \
+'  root /usr/share/nginx/html;' \
+'  index index.html;' \
+'' \
+'  location / {' \
+'    try_files $uri $uri/ /index.html;' \
+'  }' \
+'}' \
+> /etc/nginx/conf.d/app.conf
 
-# skopiuj gotowy plik nginx.conf z repo (jeśli jest dostosowany)
-COPY nginx.conf /etc/nginx/conf.d/app.conf
-
-# skopiuj statyczne pliki z builda
+# Skopiuj wynik buildu Vite
 COPY --from=build /app/dist /usr/share/nginx/html
 
-# expose port 80 (zgodnie z docker-compose)
 EXPOSE 80
-
 CMD ["nginx", "-g", "daemon off;"]
