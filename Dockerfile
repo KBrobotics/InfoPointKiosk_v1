@@ -1,23 +1,33 @@
-# ====== build stage (Debian, stabilniej niż Alpine) ======
+# ====== build stage ======
 FROM node:20-bookworm-slim AS build
 WORKDIR /app
 
-# Kopiuj manifesty zależności
-COPY package.json ./
-# jeśli kiedyś dodasz lockfile, też zostanie użyty
-COPY package-lock.json* ./
+# Narzędzia, które często są potrzebne przy instalacji paczek:
+# - ca-certificates: SSL do registry
+# - git: gdy zależność jest z repo
+# - python3/make/g++: gdy jakaś paczka buduje bindingi
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates git python3 make g++ \
+ && rm -rf /var/lib/apt/lists/*
 
-# Ustawienia npm: mniej "hałasu" i więcej retry przy problemach z siecią
+# Lepsze zachowanie npm w środowiskach typu Portainer (mniej problemów z siecią)
 RUN npm config set fund false \
  && npm config set audit false \
  && npm config set fetch-retries 5 \
  && npm config set fetch-retry-mintimeout 20000 \
  && npm config set fetch-retry-maxtimeout 120000
 
-# Instalacja zależności
-RUN npm install --no-audit --no-fund
+# Manifesty zależności
+COPY package.json ./
+COPY package-lock.json* ./
 
-# Kod aplikacji + build
+# Instalacja zależności + DIAGNOSTYKA:
+# - --legacy-peer-deps: omija częsty błąd ERESOLVE
+# - w razie błędu wypisuje logi z /root/.npm/_logs
+RUN npm install --no-audit --no-fund --legacy-peer-deps \
+ || (echo "===== NPM LOGS =====" && ls -la /root/.npm/_logs && tail -n +1 /root/.npm/_logs/* && exit 1)
+
+# Kod + build
 COPY . .
 RUN npm run build
 
@@ -25,7 +35,6 @@ RUN npm run build
 # ====== runtime stage ======
 FROM nginx:alpine
 
-# Konfiguracja nginx dla SPA (React): gdy nie ma pliku, zwróć index.html
 RUN rm -f /etc/nginx/conf.d/default.conf && \
     printf '%s\n' \
 'server {' \
@@ -41,7 +50,6 @@ RUN rm -f /etc/nginx/conf.d/default.conf && \
 '}' \
 > /etc/nginx/conf.d/app.conf
 
-# Skopiuj wynik buildu Vite
 COPY --from=build /app/dist /usr/share/nginx/html
 
 EXPOSE 80
